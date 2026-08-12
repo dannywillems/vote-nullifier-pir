@@ -18,8 +18,6 @@
 # `make sync-invalidate` passes `--invalidate-after-blocks` (rebuild tree + tiers when new blocks were synced).
 
 ROOT        := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
-IMT_DIR     := imt-tree
-SERVICE_DIR := nf-ingest
 NF_DIR      := nf-server
 # Workspace builds emit binaries under the repo-root `target/`, not `nf-server/target/`.
 NF_RELEASE_BIN := $(ROOT)/target/release/nf-server
@@ -50,38 +48,153 @@ endif
 
 _SYNC_CMD := cd $(NF_DIR) && cargo run --release -- sync --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) $(_MAX_HEIGHT_FLAG)
 
+# ── Tool versions (keep in sync with .github/workflows/) ─────────────
+# Installed by `make setup-tools`; the targets that need them are not
+# wired into CI yet, so a fresh clone can run everything else without
+# installing anything.
+CARGO_DENY_VERSION  ?= 0.20.2
+CARGO_AUDIT_VERSION ?= 0.22.2
+TAPLO_VERSION       ?= 0.10.0
+CARGO_MSRV_VERSION  ?= 0.19.3
+CARGO_HACK_VERSION  ?= 0.6.45
+
 # ── Targets ──────────────────────────────────────────────────────────
 
-.PHONY: build-nf sync sync-invalidate serve build install test clean status help
-
+.PHONY: help
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
-build-nf: ## Build nf-server binary (release, nightly)
-	cd $(NF_DIR) && cargo build --release
+.PHONY: build
+build: ## Build the nf-server binary (release)
+	cargo build --locked -p nf-server --release
 
-build: ## Build nf-server and service library (release)
-	cd $(NF_DIR) && cargo build --release
-
+.PHONY: install
 install: ## Install nf-server (INSTALL_FEATURES; PREFIX defaults to ~/.local, use sudo for /usr/local)
 	cd $(ROOT) && cargo build -p nf-server --release --features "$(INSTALL_FEATURES)"
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	install -m 0755 "$(NF_RELEASE_BIN)" "$(DESTDIR)$(PREFIX)/bin/nf-server"
 
+.PHONY: sync
 sync: ## `nf-server sync`: nullifiers + tree checkpoint + PIR tiers (resumable)
 	$(_SYNC_CMD)
 
+.PHONY: sync-invalidate
 sync-invalidate: ## Same as sync with `--invalidate-after-blocks` (rebuild tree/tiers when new blocks synced)
 	cd $(NF_DIR) && cargo run --release -- sync --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --lwd-url $(LWD_URL) --invalidate-after-blocks $(_MAX_HEIGHT_FLAG)
 
+.PHONY: serve
 serve: ## Start the PIR HTTP server
 	cd $(NF_DIR) && cargo run --release --features serve -- serve --zcash-network $(ZCASH_NETWORK) --pir-data-dir ../$(PIR_DATA_DIR) --port $(PORT)
 
-test: ## Run unit tests for all subcrates
-	cd $(IMT_DIR) && cargo test --lib
-	cd $(SERVICE_DIR) && cargo test --lib
+# ── Developer targets ────────────────────────────────────────────────
+# `.github/workflows/test.yml` calls these, so local and CI run the
+# exact same commands. Every invocation passes `--locked`: the
+# committed Cargo.lock is authoritative and drift must fail loudly.
 
+.PHONY: setup-tools
+setup-tools: ## Install the pinned dev tooling
+	cargo install --locked cargo-deny  --version $(CARGO_DENY_VERSION)
+	cargo install --locked cargo-audit --version $(CARGO_AUDIT_VERSION)
+	cargo install --locked taplo-cli   --version $(TAPLO_VERSION)
+	cargo install --locked cargo-msrv  --version $(CARGO_MSRV_VERSION)
+	cargo install --locked cargo-hack  --version $(CARGO_HACK_VERSION)
+
+.PHONY: check
+check: ## Type-check the whole workspace, all targets
+	cargo check --workspace --all-targets --locked
+
+.PHONY: check-format
+check-format: check-format-rust check-format-toml ## Check Rust + TOML format
+
+.PHONY: check-format-rust
+check-format-rust: ## Check Rust formatting (stable rustfmt, as CI does)
+	cargo fmt --all -- --check
+
+.PHONY: check-format-toml
+check-format-toml: ## Check TOML formatting (needs `make setup-tools`)
+	taplo format --check
+
+.PHONY: format
+format: format-rust format-toml ## Format Rust + TOML
+
+.PHONY: format-rust
+format-rust: ## Format Rust sources
+	cargo fmt --all
+
+.PHONY: format-toml
+format-toml: ## Format TOML files (needs `make setup-tools`)
+	taplo format
+
+.PHONY: lint
+lint: ## Clippy over the workspace, warnings denied
+	cargo clippy --workspace --all-targets --locked -- -D warnings
+
+.PHONY: lint-shell
+lint-shell: ## Shellcheck every committed shell script
+	shellcheck scripts/*.sh
+
+# nf-server is a binary crate; run its unit tests plus the bootstrap_e2e
+# integration suite under the `serve` feature (the only build
+# configuration in which the bootstrap and /metrics modules compile in).
+.PHONY: test
+test: ## THE test set. CI runs exactly this.
+	cargo test --locked --lib -p imt-tree
+	cargo test --locked --lib -p nf-ingest
+	cargo test --locked -p pir-types -p pir-export -p pir-client
+	cargo test --locked -p nf-server --features serve
+
+.PHONY: smoke
+smoke: ## Binary smoke checks (doctor, release channels, serve --help)
+	cargo run --locked -p nf-server -- doctor
+	scripts/test_release_channel.sh
+	cargo run --locked --quiet -p nf-server --features serve -- \
+		serve --help | grep -Fq -- '--zcash-network'
+
+.PHONY: test-release
+test-release: ## The test set in release mode (debug_assert! compiled out)
+	cargo test --locked --release --lib -p imt-tree
+	cargo test --locked --release --lib -p nf-ingest
+	cargo test --locked --release -p pir-types -p pir-export -p pir-client
+	cargo test --locked --release -p nf-server --features serve
+
+.PHONY: test-doc
+test-doc: ## Doc tests for the published crates
+	cargo test --locked --doc -p imt-tree -p pir-types -p pir-client
+
+.PHONY: test-e2e
+test-e2e: ## In-process end-to-end harness
+	cargo run --locked --release -p pir-test -- small
+
+.PHONY: doc
+doc: ## Build rustdoc for the published crates, warnings denied
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked \
+		-p imt-tree -p pir-types -p pir-client
+
+.PHONY: audit
+audit: ## RustSec advisory scan (needs `make setup-tools`)
+	cargo audit --deny warnings
+
+.PHONY: deny
+deny: ## Licenses, advisories, bans, sources (needs `make setup-tools`)
+	cargo deny check
+
+.PHONY: msrv
+msrv: ## Verify the declared rust-version builds (needs rust-version)
+	cargo msrv verify
+
+.PHONY: features
+features: ## Every feature combination must compile
+	cargo hack --workspace --feature-powerset --no-dev-deps check --locked
+
+.PHONY: bench-check
+bench-check: ## Benches must keep compiling
+	cargo bench --locked -p imt-tree --no-run
+
+.PHONY: ci
+ci: check-format lint test smoke test-doc doc deny audit ## Full local gate
+
+.PHONY: status
 status: ## Show nullifier sync progress (count + checkpoint + tree file)
 	@NF="$(PIR_DATA_DIR)/nullifiers.bin"; DATASET="$(PIR_DATA_DIR)/nullifiers.dataset.json"; CP="$(PIR_DATA_DIR)/nullifiers.checkpoint"; \
 	TREE="$(PIR_DATA_DIR)/nullifiers.tree"; \
@@ -113,10 +226,9 @@ status: ## Show nullifier sync progress (count + checkpoint + tree file)
 		echo "  nullifiers.tree: not present"; \
 	fi
 
+.PHONY: clean
 clean: ## Remove built artifacts and data files
-	cd $(IMT_DIR) && cargo clean
-	cd $(SERVICE_DIR) && cargo clean
-	cd $(NF_DIR) && cargo clean
+	cargo clean
 	rm -f $(PIR_DATA_DIR)/nullifiers.bin $(PIR_DATA_DIR)/nullifiers.dataset.json $(PIR_DATA_DIR)/nullifiers.dataset.json.tmp \
 		$(PIR_DATA_DIR)/nullifiers.checkpoint $(PIR_DATA_DIR)/nullifiers.checkpoint.tmp $(PIR_DATA_DIR)/nullifiers.index \
 		$(PIR_DATA_DIR)/nullifiers.tree $(PIR_DATA_DIR)/nullifiers.tree.tmp \

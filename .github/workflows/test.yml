@@ -23,10 +23,10 @@ jobs:
           components: clippy, rustfmt
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: make check-format-rust
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: make lint
 
   test:
     name: Unit tests
@@ -49,24 +49,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-test-
 
-      - name: nf-server doctor (smoke)
-        run: cargo run -p nf-server -- doctor
-
-      - name: Test release channels
-        run: scripts/test_release_channel.sh
-
+      # Every step below is a Makefile target, so `make test` and
+      # `make smoke` locally run byte-for-byte what CI runs.
       - name: Run unit tests
-        run: |
-          cargo test --lib -p imt-tree
-          cargo test --lib -p nf-ingest
-          cargo test -p pir-types -p pir-export -p pir-client
-          # nf-server is a binary crate; run its unit tests + the
-          # bootstrap_e2e integration suite under the `serve` feature
-          # (the only build configuration in which the bootstrap and
-          # /metrics modules are compiled in).
-          cargo test -p nf-server --features serve
-          cargo run --quiet -p nf-server --features serve -- serve --help \
-            | grep -Fq -- '--zcash-network'
+        run: make test
+
+      - name: Binary smoke checks
+        run: make smoke
 
   notify-slack:
     name: Slack Notification
