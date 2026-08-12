@@ -1,13 +1,22 @@
 name: Tests
 
 on:
+  # Every branch and every pull request, whatever the base. `branches: ['**']`
+  # matches all branches but not tags, so tagged releases are validated by
+  # release.yml alone rather than running this workflow a second time.
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
+
+# A push to a branch that has an open pull request triggers both a `push` run
+# and a `pull_request` run. They are distinct refs, so this does not dedupe
+# them; it cancels runs superseded by a newer commit on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   quality:
