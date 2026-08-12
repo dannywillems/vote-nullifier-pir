@@ -12,4 +12,5 @@ rust-toolchain.toml
 .vscode/
 .claude/
 
+.notes/
 .plans/
