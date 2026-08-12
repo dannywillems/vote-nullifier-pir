@@ -1,3 +1,14 @@
+# Unreleased
+
+- Add developer Makefile targets (`check`, `check-format`, `format`, `lint`,
+  `test`, `smoke`, `doc`, `audit`, `deny` and friends) and route the Tests
+  workflow through them, so local runs and CI execute the same commands. Every
+  invocation passes `--locked`, making lockfile drift fail instead of being
+  silently repaired ([5339362]).
+- Run the Tests workflow on every branch and every pull request rather than
+  only those targeting `main`, so work on `dev` and other integration branches
+  is validated. Superseded runs on the same ref are cancelled ([ae48ce9]).
+
 # v0.0.42-alpha.1
 
 - Disable Sentry tracing in `nf-server` so proxy-added client identity headers,
@@ -53,3 +64,8 @@
 # 0.1.1
 
 - Initial published PIR client release.
+
+<!-- Commit links -->
+
+[5339362]: https://github.com/valargroup/vote-nullifier-pir/commit/5339362
+[ae48ce9]: https://github.com/valargroup/vote-nullifier-pir/commit/ae48ce9
